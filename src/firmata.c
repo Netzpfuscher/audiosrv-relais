@@ -22,12 +22,13 @@
 #include	<string.h>
 #include	<stdlib.h>
 #include	<stdio.h>
+#include <errno.h>
 
 t_firmata	*firmata_new(char *name)
 {
   t_firmata	*res;
 
-  printf("Opening device at: %s\n", name);
+  printf("Firmata: Opening device at: %s\n", name);
   res = malloc(sizeof(t_firmata));
   if (!res)
     {
@@ -40,11 +41,14 @@ t_firmata	*firmata_new(char *name)
       perror("firmata_new::Failed malloc");
       return (NULL);
     }
-  serial_open(res->serial, name);
+  if(serial_open(res->serial, name) == -1){
+    return (NULL);
+  }
+
   firmata_initPins(res);
   serial_setBaud(res->serial, 57600);
   firmata_askFirmware(res);
-  printf("Device opened at: %s\n", name);
+  printf("Firmata: Device opened at: %s\n", name);
   return (res);
 }
 

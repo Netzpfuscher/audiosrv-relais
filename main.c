@@ -7,8 +7,12 @@
 #include "includes/firmata.h"
 #include "includes/iniparser.h"
 
+#define FALSE 0
+#define TRUE  1
+
 int parse_ini_file(char * ini_name);
-void init(void);
+int init(void);
+void show_help(void);
 
 #define NUM_REL 16
 
@@ -19,15 +23,27 @@ char* serial_port;
 
 int rel[NUM_REL];
 char* file[NUM_REL];
+char* arg_ini;
 int inv[NUM_REL];
 
 int ledr, ledb, ledg;
 t_firmata     *firmata;
 
-int main()
+int main(int argc, char *argv[])
 {
-    printf("Starting Audioserver Control...\n");
-    init();
+    printf("\n");
+
+    if (argc < 2){
+        printf("Main: No config specified... relais /etc/relais.conf\n");
+        return 0;
+    }
+    arg_ini = strdup(argv[1]);
+    printf("Main: Starting Audioserver Control...\n");
+
+    if(init() == -1){
+        printf("Main: Error... Exit\n\n");
+        return 0;
+    }
     FILE *fp;
 
     int   i = 0;
@@ -81,14 +97,12 @@ int parse_ini_file(char * ini_name)
     dictionary  *   ini ;
     const char  *   s;
     int i;
-    printf("Read configuration...\n");
+    printf("Parse: Read configuration: %s\n", ini_name);
     ini = iniparser_load(ini_name);
     if (ini==NULL) {
-        fprintf(stderr, "cannot parse file: %s\n", ini_name);
+        //fprintf(stderr, "cannot parse file: %s\n", ini_name);
         return -1 ;
     }
-
-    //iniparser_dump(ini, stderr);
 
     s = iniparser_getstring(ini, "firmata:port", NULL);
     serial_port = strdup(s);
@@ -111,10 +125,15 @@ int parse_ini_file(char * ini_name)
     iniparser_freedict(ini);
     return 0 ;
 }
-void init(void){
+int init(void){
     int i;
-    parse_ini_file("/home/jkerrinnes/git/audiosrv-relais/rel.conf");
+    if(parse_ini_file(arg_ini) == -1){
+        return -1;
+    }
     firmata = firmata_new(serial_port); //init Firmata
+    if (firmata == NULL){
+        return -1;
+    }
     while(!firmata->isReady) //Wait until device is up
     firmata_pull(firmata);
 
@@ -122,6 +141,7 @@ void init(void){
         firmata_pinMode(firmata, rel[i], MODE_OUTPUT);
         firmata_digitalWrite(firmata, rel[i], inv[i]);
     }
-
+        return 0;
 }
+
 

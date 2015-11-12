@@ -58,43 +58,43 @@ int		serial_open(t_serial *serial, char *name)
     {
       if (errno == EACCES)
 	{
-	  perror("Unable to access, insufficient permission");
+	  perror("Serial: Unable to access, insufficient permission");
 	}
       else if (errno == EISDIR)
 	{
-	  perror("Unable to open, Object is a directory, not a serial port");
+	  perror("Serial: Unable to open, Object is a directory, not a serial port");
 	}
       else if (errno == ENODEV || errno == ENXIO)
 	{
-	  perror("Unable to open, Serial port hardware not installed");
+	  perror("Serial: Unable to open, Serial port hardware not installed");
 	}
       else if (errno == ENOENT)
 	{
-	  perror("Unable to open, Device name does not exist");
+	  perror("Serial: Unable to open, Device name does not exist");
 	}
       else
 	{
-	  perror("Unable to open: Unknown error.");
+	  perror("Serial: Unable to open: Unknown error.");
 	}
       return (-1);
     }
   if (ioctl(serial->port_fd, TIOCMGET, &bits) < 0)
     {
       close(serial->port_fd);
-      perror("Unable to query serial port signals");
+      perror("Serial: Unable to query serial port signals");
       return (-1);
     }
   bits &= ~(TIOCM_DTR | TIOCM_RTS);
   if (ioctl(serial->port_fd, TIOCMSET, &bits) < 0)
     {
       close(serial->port_fd);
-      perror("Unable to control serial port signals");
+      perror("Serial: Unable to control serial port signals");
       return (-1);
     }
   if (tcgetattr(serial->port_fd, &(serial->settings_orig)) != 0)
     {
       close(serial->port_fd);
-      perror("Unable to query serial port settings (perhaps not a serial port)");
+      perror("Serial: Unable to query serial port settings (perhaps not a serial port)");
       return (-1);
     }
   memset(&(serial->settings), 0, sizeof(struct termios));
