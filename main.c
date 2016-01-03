@@ -45,13 +45,13 @@ int main(int argc, char *argv[])
         return 0;
     }
     FILE *fp;
-
+	
     int   i = 0;
     int   w = 0;
 
     while (1)
     {
-        for(w=0; w<NUM_REL; i++) {
+        for(w=0; w<NUM_REL; w++) {
             fp = fopen(file[w],"r");
             if (fp != NULL ){
                 if(inv[w]==1){
@@ -70,7 +70,7 @@ int main(int argc, char *argv[])
         }
 
         sleep(1);
-
+		
         if (i == 0){
             i++;
             firmata_digitalWrite(firmata, ledb, HIGH);
@@ -136,12 +136,16 @@ int init(void){
     }
     while(!firmata->isReady) //Wait until device is up
     firmata_pull(firmata);
+	
+	firmata_pinMode(firmata, ledg, MODE_OUTPUT);
+	firmata_pinMode(firmata, ledb, MODE_OUTPUT);
+	firmata_pinMode(firmata, ledr, MODE_OUTPUT);
 
     for(i=0; i<NUM_REL; i++) {
         firmata_pinMode(firmata, rel[i], MODE_OUTPUT);
         firmata_digitalWrite(firmata, rel[i], inv[i]);
     }
-        return 0;
+    return 0;
 }
 
 
