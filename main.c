@@ -23,10 +23,11 @@ int get_active (void);
 
 #define PCM_PATH "/proc/asound/pcm"
 #define NUM_REL 16
-#define PORT_BASE 6000
+#define PORT_BASE 5000
 
 int power_time = 0;
 int amp_time = 0;
+int power_count = 0;
 
 //FILE *shairport[NUM_REL];
 
@@ -49,8 +50,9 @@ struct led_state {
 char* serial_port;
 char pbuffer[128];
 int active_cards[NUM_REL];
-int power_relais = 0;
+
 struct ini confi[NUM_REL];
+int power_relais = 0;
 struct led_state led;
 int port = PORT_BASE;
 
@@ -63,12 +65,12 @@ t_firmata     *firmata;
 
 void sig_handler(int signo)
 {
-	int i;
+	//int i;
 	if (signo == SIGINT)
     	printf("received SIGINT\n");
-	for(i=0;i<num_cards;i++){
-		pclose(confi[i].shairport);
-	}
+//	for(i=0;i<num_cards;i++){
+//		pclose(confi[i].shairport);
+//	}
 	exit(0);
 }
 
@@ -91,33 +93,45 @@ int main(int argc, char *argv[])
         printf("Main: Error... Exit\n\n");
         return 0;
     }
+	printf("r: %i", confi[0].matrix);
     num_cards = get_cards();
 
 
-    	int   i = 0;
-    	char *new_str;
+    int   i = 0;
+    char *new_str;
 	int ret;
 	for(i=0;i<num_cards;i++){
 		if(confi[i].alsa_dev != NULL && confi[i].shair_name != NULL){
-        		ret = asprintf(&new_str,"shairport-sync -p %i -a %s -o alsa -- -d %s",port,confi[i].alsa_dev,confi[i].shair_name);
+        	ret = asprintf(&new_str,"shairport-sync -p %i -a %s -o alsa -- -d %s",port,confi[i].shair_name,confi[i].alsa_dev);
+			if(ret){}
 			confi[i].shairport = popen(new_str, "r");
 			printf("%s\n",new_str);
 			free(new_str);
 		}
-	port++;
+	port = port +10;
 	}
 
     for(i=0;i<NUM_REL;i++){
 	active_cards[i] = 0;
+//	printf("relais_port: %i\n",confi[i].relais);
+
     }
 
     while (1)
     {
-	set_relais(power_relais,get_active());
+	int pow;
+	pow = get_active();
+	set_relais(power_relais,pow);
 
         for(i=0; i<num_cards; i++) {
-        	set_relais(confi[i].matrix,active_cards[i]);
-        }
+        	set_relais(confi[i].matrix-1,active_cards[i]);
+			//printf("relais_port: %i\n",confi[confi[i].matrix-1].relais);
+  
+		}
+		//printf("\n");
+		
+
+	
 
         sleep(1);
 	led_blink();
@@ -178,11 +192,10 @@ int parse_ini_file(char * ini_name)
 		}
                 free(new_str);
         }
-
     }
     power_time = iniparser_getint(ini, "timing:power_time",0);
     amp_time = iniparser_getint(ini, "timing:amp_time",0);
-    power_relais = iniparser_getint(ini, "firmata:power_relais",-1);
+    power_relais = iniparser_getint(ini, "firmata:power_relais",-1)-1;
     led.green = iniparser_getint(ini, "firmata:ledg", -1);
     led.blue = iniparser_getint(ini, "firmata:ledb", -1);
     led.red = iniparser_getint(ini, "firmata:ledr", -1);
@@ -213,20 +226,25 @@ int init(void){
 }
 
 void set_relais (int rel, int state){
+	volatile int i = rel;
 	if (state>0){
-		if (confi[rel].invert == 0){
-			firmata_digitalWrite(firmata, confi[rel].relais, HIGH);
+		//printf("an: %i   %i\n",confi[rel].relais,state);
+		if (confi[i].invert == 0){
+			firmata_digitalWrite(firmata, confi[i].relais, HIGH);
 		}else{
-			firmata_digitalWrite(firmata, confi[rel].relais, LOW);
+			firmata_digitalWrite(firmata, confi[i].relais, LOW);
+			
 		}
+		
 	}else{
-		if (confi[rel].invert == 0){
-			firmata_digitalWrite(firmata, confi[rel].relais, LOW);
+		//printf("aus: %i   %i\n",confi[rel].relais,state);
+		if (confi[i].invert == 0){
+			firmata_digitalWrite(firmata, confi[i].relais, LOW);
 		}else{
-			firmata_digitalWrite(firmata, confi[rel].relais, HIGH);
+			firmata_digitalWrite(firmata, confi[i].relais, HIGH);
+			
 		}
 	}
-
 }
 
 void led_blink(void){
@@ -271,12 +289,11 @@ int get_active(void){
 	#define BYTE_READ 255
 	#define LINE_PLAY 4
 	char str[BYTE_READ];
-	char needle[] = "Stop";
+	char needle[10] = "Stop";
 	char *new_str;
 	int i;
 	int card;
 	int power = 0;
-	static int power_count = 0;
 
 	for (card=0;card < num_cards;card++){
 		if(asprintf(&new_str,"/proc/asound/card%i/stream0",card) != -1){
@@ -285,11 +302,11 @@ int get_active(void){
 				for (i=0;i<LINE_PLAY;i++){
 					if(fgets(str, BYTE_READ, stream)!=NULL ){
 						if(i==LINE_PLAY-1 && strstr(str, needle)){
-							if(active_cards[i]){
-							active_cards[i]--;
+							if(active_cards[card]){
+							active_cards[card]--;
 							}
 						}else if(i==LINE_PLAY-1){
-							active_cards[i] = amp_time;
+							active_cards[card] = amp_time;
 							power = 1;
 						}
 					}
@@ -299,6 +316,7 @@ int get_active(void){
 		free(new_str);
 		}
 	}
+	//printf("power: %i\n",power);
 	if(power){
 		power_count = power_time;
 	}else{
@@ -306,6 +324,6 @@ int get_active(void){
 			power_count--;
 		}
 	}
-	return power;
+	return power_count;
 }
 
