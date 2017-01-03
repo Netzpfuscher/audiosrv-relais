@@ -22,7 +22,9 @@ int get_active (void);
 
 #define PCM_PATH "/proc/asound/pcm"
 #define NUM_REL 16
-#define POWER_RELAIS 1
+
+int power_time = 0;
+int amp_time = 0;
 
 struct ini {
 	int relais;
@@ -41,6 +43,7 @@ struct led_state {
 char* serial_port;
 
 int active_cards[NUM_REL];
+int power_relais = 0;
 struct ini confi[NUM_REL];
 struct led_state led;
 
@@ -76,11 +79,7 @@ int main(int argc, char *argv[])
 
     while (1)
     {
-	if(get_active()){
-		set_relais(POWER_RELAIS,1);
-	}else{
-		set_relais(POWER_RELAIS,0);
-	}
+	set_relais(power_relais,get_active());
 
         for(i=0; i<num_cards; i++) {
         	set_relais(confi[i].matrix,active_cards[i]);
@@ -128,7 +127,9 @@ int parse_ini_file(char * ini_name)
 		free(new_str);
 	}
     }
-
+    power_time = iniparser_getint(ini, "timing:power_time",0);
+    amp_time = iniparser_getint(ini, "timing:amp_time",0);
+    power_relais = iniparser_getint(ini, "firmata:power_relais",-1);
     led.green = iniparser_getint(ini, "firmata:ledg", -1);
     led.blue = iniparser_getint(ini, "firmata:ledb", -1);
     led.red = iniparser_getint(ini, "firmata:ledr", -1);
@@ -159,7 +160,7 @@ int init(void){
 }
 
 void set_relais (int rel, int state){
-	if (state==1){
+	if (state>0){
 		if (confi[rel].invert == 0){
 			firmata_digitalWrite(firmata, confi[rel].relais, HIGH);
 		}else{
@@ -221,7 +222,8 @@ int get_active(void){
 	char *new_str;
 	int i;
 	int card;
-	int power=0;
+	int power = 0;
+	static int power_count = 0;
 
 	for (card=0;card < num_cards;card++){
 		if(asprintf(&new_str,"/proc/asound/card%i/stream0",card) != -1){
@@ -230,9 +232,11 @@ int get_active(void){
 				for (i=0;i<LINE_PLAY;i++){
 					if(fgets(str, BYTE_READ, stream)!=NULL ){
 						if(i==LINE_PLAY-1 && strstr(str, needle)){
-							active_cards[i] = 0;
+							if(active_cards[i]){
+							active_cards[i]--;
+							}
 						}else if(i==LINE_PLAY-1){
-							active_cards[i] = 1;
+							active_cards[i] = amp_time;
 							power = 1;
 						}
 					}
@@ -240,6 +244,13 @@ int get_active(void){
 			fclose(stream);
 			}
 		free(new_str);
+		}
+	}
+	if(power){
+		power_count = power_time;
+	}else{
+		if(power_count){
+			power_count--;
 		}
 	}
 	return power;
