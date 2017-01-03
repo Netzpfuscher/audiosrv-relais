@@ -1,3 +1,4 @@
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,19 +15,40 @@ int parse_ini_file(char * ini_name);
 int init(void);
 void show_help(void);
 
+void set_relais(int rel, int state);
+void led_blink(void);
+int get_cards(void);
+int get_active (void);
+
+#define PCM_PATH "/proc/asound/pcm"
 #define NUM_REL 16
+#define POWER_RELAIS 1
+
+struct ini {
+	int relais;
+	int invert;
+	int matrix;
+};
+
+struct led_state {
+	int red;
+	int green;
+	int blue;
+	int state;
+};
+
 
 char* serial_port;
 
+int active_cards[NUM_REL];
+struct ini confi[NUM_REL];
+struct led_state led;
 
-//char *mpd_name[5];
-
-int rel[NUM_REL];
-char* file[NUM_REL];
 char* arg_ini;
-int inv[NUM_REL];
 
-int ledr, ledb, ledg;
+//int ledr, ledb, ledg;
+int num_cards;
+
 t_firmata     *firmata;
 
 int main(int argc, char *argv[])
@@ -34,61 +56,39 @@ int main(int argc, char *argv[])
     printf("\n");
 
     if (argc < 2){
-        printf("Main: No config specified... relais /etc/relais.conf\n");
-        return 0;
+        printf("Main: No config specified... use default: /etc/relais.conf\n");
+        arg_ini = "/etc/relais.conf";
+    }else{
+    	arg_ini = strdup(argv[1]);
     }
-    arg_ini = strdup(argv[1]);
     printf("Main: Starting Audioserver Control...\n");
 
     if(init() == -1){
         printf("Main: Error... Exit\n\n");
         return 0;
     }
-    FILE *fp;
-	
+    num_cards = get_cards();
+
     int   i = 0;
-    int   w = 0;
+    for(i=0;i<NUM_REL;i++){
+	active_cards[i] = 0;
+    }
 
     while (1)
     {
-        for(w=0; w<NUM_REL; w++) {
-            fp = fopen(file[w],"r");
-            if (fp != NULL ){
-                if(inv[w]==1){
-                    firmata_digitalWrite(firmata, rel[w], LOW);
-                }else{
-                    firmata_digitalWrite(firmata, rel[w], HIGH);
-                }
-                fclose(fp);
-            }else{
-                if(inv[w]==1){
-                    firmata_digitalWrite(firmata, rel[w], HIGH);
-                }else{
-                    firmata_digitalWrite(firmata, rel[w], LOW);
-                }
-            }
+	if(get_active()){
+		set_relais(POWER_RELAIS,1);
+	}else{
+		set_relais(POWER_RELAIS,0);
+	}
+
+        for(i=0; i<num_cards; i++) {
+        	set_relais(confi[i].matrix,active_cards[i]);
         }
 
         sleep(1);
-		
-        if (i == 0){
-            i++;
-            firmata_digitalWrite(firmata, ledb, HIGH);
-            firmata_digitalWrite(firmata, ledg, LOW);
-            firmata_digitalWrite(firmata, ledr, LOW);
-        }else if (i == 1){
-            i++;
-            firmata_digitalWrite(firmata, ledb, LOW);
-            firmata_digitalWrite(firmata, ledg, HIGH);
-            firmata_digitalWrite(firmata, ledr, LOW);
-        }else{
-            i = 0;
-            firmata_digitalWrite(firmata, ledb, LOW);
-            firmata_digitalWrite(firmata, ledg, LOW);
-            firmata_digitalWrite(firmata, ledr, HIGH);
-        }
-
-	}
+	led_blink();
+    }
     return 0;
 }
 
@@ -110,18 +110,28 @@ int parse_ini_file(char * ini_name)
     for(i=0; i<NUM_REL; i++) {
         char *new_str;
 
-        ret = asprintf(&new_str,"%s%d","files:file",i+1);
-        s = iniparser_getstring(ini, new_str, NULL);
-        file[i] = strdup(s);
         ret = asprintf(&new_str,"%s%d","firmata:rel_port_",i+1);
-        rel[i] = iniparser_getint(ini, new_str, -1);
-        ret = asprintf(&new_str,"%s%d","firmata:rel_inv_",i+1);
-        inv[i] = iniparser_getint(ini, new_str, -1);;
+        if(ret>0){
+		confi[i].relais = iniparser_getint(ini, new_str, -1);
+		free(new_str);
+	}
+
+	ret = asprintf(&new_str,"%s%d","firmata:rel_inv_",i+1);
+	if(ret>0){
+        	confi[i].invert = iniparser_getint(ini, new_str, -1);
+		free(new_str);
+	}
+
+	ret = asprintf(&new_str,"%s%d","matrix:card",i);
+	if(ret>0){
+		confi[i].matrix = iniparser_getint(ini, new_str, -1);
+		free(new_str);
+	}
     }
 
-    ledg = iniparser_getint(ini, "firmata:ledg", -1);
-    ledb = iniparser_getint(ini, "firmata:ledb", -1);
-    ledr = iniparser_getint(ini, "firmata:ledr", -1);
+    led.green = iniparser_getint(ini, "firmata:ledg", -1);
+    led.blue = iniparser_getint(ini, "firmata:ledb", -1);
+    led.red = iniparser_getint(ini, "firmata:ledr", -1);
     iniparser_freedict(ini);
     return 0 ;
 }
@@ -136,16 +146,102 @@ int init(void){
     }
     while(!firmata->isReady) //Wait until device is up
     firmata_pull(firmata);
-	
-	firmata_pinMode(firmata, ledg, MODE_OUTPUT);
-	firmata_pinMode(firmata, ledb, MODE_OUTPUT);
-	firmata_pinMode(firmata, ledr, MODE_OUTPUT);
+
+	firmata_pinMode(firmata, led.green, MODE_OUTPUT);
+	firmata_pinMode(firmata, led.blue, MODE_OUTPUT);
+	firmata_pinMode(firmata, led.red, MODE_OUTPUT);
 
     for(i=0; i<NUM_REL; i++) {
-        firmata_pinMode(firmata, rel[i], MODE_OUTPUT);
-        firmata_digitalWrite(firmata, rel[i], inv[i]);
+        firmata_pinMode(firmata, confi[i].relais, MODE_OUTPUT);
+        firmata_digitalWrite(firmata, confi[i].relais, confi[i].invert);
     }
     return 0;
 }
 
+void set_relais (int rel, int state){
+	if (state==1){
+		if (confi[rel].invert == 0){
+			firmata_digitalWrite(firmata, confi[rel].relais, HIGH);
+		}else{
+			firmata_digitalWrite(firmata, confi[rel].relais, LOW);
+		}
+	}else{
+		if (confi[rel].invert == 0){
+			firmata_digitalWrite(firmata, confi[rel].relais, LOW);
+		}else{
+			firmata_digitalWrite(firmata, confi[rel].relais, HIGH);
+		}
+	}
+
+}
+
+void led_blink(void){
+        if (led.state == 0){
+            led.state++;
+            firmata_digitalWrite(firmata, led.blue, HIGH);
+            firmata_digitalWrite(firmata, led.green, LOW);
+            firmata_digitalWrite(firmata, led.red, LOW);
+        }else if (led.state == 1){
+            led.state++;
+            firmata_digitalWrite(firmata, led.blue, LOW);
+            firmata_digitalWrite(firmata, led.green, HIGH);
+            firmata_digitalWrite(firmata, led.red, LOW);
+        }else{
+            led.state = 0;
+            firmata_digitalWrite(firmata, led.blue, LOW);
+            firmata_digitalWrite(firmata, led.green, LOW);
+            firmata_digitalWrite(firmata, led.red, HIGH);
+        }
+}
+
+int get_cards(void){
+	int num = 0;
+	FILE *pcm;
+	pcm = fopen(PCM_PATH,"r");
+        if (pcm != NULL ){
+		while(!feof(pcm)){
+  			if(fgetc(pcm) == '\n')
+  			{
+    			num++;
+  			}
+		}
+        	fclose(pcm);
+		return num;
+	}else{
+		return -1;
+	}
+}
+
+int get_active(void){
+	FILE *stream;
+	#define BYTE_READ 255
+	#define LINE_PLAY 4
+	char str[BYTE_READ];
+	char needle[] = "Stop";
+	char *new_str;
+	int i;
+	int card;
+	int power=0;
+
+	for (card=0;card < num_cards;card++){
+		if(asprintf(&new_str,"/proc/asound/card%i/stream0",card) != -1){
+			stream = fopen(new_str,"r");
+			if (stream != NULL){
+				for (i=0;i<LINE_PLAY;i++){
+					if(fgets(str, BYTE_READ, stream)!=NULL ){
+						if(i==LINE_PLAY-1 && strstr(str, needle)){
+							active_cards[i] = 0;
+						}else if(i==LINE_PLAY-1){
+							active_cards[i] = 1;
+							power = 1;
+						}
+					}
+				}
+			fclose(stream);
+			}
+		free(new_str);
+		}
+	}
+	return power;
+}
 
