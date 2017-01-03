@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <signal.h>
 #include <time.h>
 #include "includes/firmata.h"
 #include "includes/iniparser.h"
@@ -22,14 +23,20 @@ int get_active (void);
 
 #define PCM_PATH "/proc/asound/pcm"
 #define NUM_REL 16
+#define PORT_BASE 6000
 
 int power_time = 0;
 int amp_time = 0;
+
+//FILE *shairport[NUM_REL];
 
 struct ini {
 	int relais;
 	int invert;
 	int matrix;
+	char* alsa_dev;
+	char* shair_name;
+	FILE *shairport;
 };
 
 struct led_state {
@@ -39,13 +46,13 @@ struct led_state {
 	int state;
 };
 
-
 char* serial_port;
-
+char pbuffer[128];
 int active_cards[NUM_REL];
 int power_relais = 0;
 struct ini confi[NUM_REL];
 struct led_state led;
+int port = PORT_BASE;
 
 char* arg_ini;
 
@@ -54,9 +61,23 @@ int num_cards;
 
 t_firmata     *firmata;
 
+void sig_handler(int signo)
+{
+	int i;
+	if (signo == SIGINT)
+    	printf("received SIGINT\n");
+	for(i=0;i<num_cards;i++){
+		pclose(confi[i].shairport);
+	}
+	exit(0);
+}
+
+
 int main(int argc, char *argv[])
 {
     printf("\n");
+
+    if (signal(SIGINT, sig_handler) == SIG_ERR) printf("\ncan't catch SIGINT\n");
 
     if (argc < 2){
         printf("Main: No config specified... use default: /etc/relais.conf\n");
@@ -72,7 +93,20 @@ int main(int argc, char *argv[])
     }
     num_cards = get_cards();
 
-    int   i = 0;
+
+    	int   i = 0;
+    	char *new_str;
+	int ret;
+	for(i=0;i<num_cards;i++){
+		if(confi[i].alsa_dev != NULL && confi[i].shair_name != NULL){
+        		ret = asprintf(&new_str,"shairport-sync -p %i -a %s -o alsa -- -d %s",port,confi[i].alsa_dev,confi[i].shair_name);
+			confi[i].shairport = popen(new_str, "r");
+			printf("%s\n",new_str);
+			free(new_str);
+		}
+	port++;
+	}
+
     for(i=0;i<NUM_REL;i++){
 	active_cards[i] = 0;
     }
@@ -126,6 +160,25 @@ int parse_ini_file(char * ini_name)
 		confi[i].matrix = iniparser_getint(ini, new_str, -1);
 		free(new_str);
 	}
+
+	ret = asprintf(&new_str,"%s%d","alsa:device",i);
+	 if(ret>0){
+                s = iniparser_getstring(ini, new_str, NULL);
+		if(s != NULL){
+			confi[i].alsa_dev = strdup(s);
+		}
+                free(new_str);
+        }
+
+	 ret = asprintf(&new_str,"%s%d","shairport:shair",i);
+         if(ret>0){
+                s = iniparser_getstring(ini, new_str, NULL);
+		if(s != NULL){
+	                confi[i].shair_name = strdup(s);
+		}
+                free(new_str);
+        }
+
     }
     power_time = iniparser_getint(ini, "timing:power_time",0);
     amp_time = iniparser_getint(ini, "timing:amp_time",0);
