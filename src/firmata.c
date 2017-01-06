@@ -18,6 +18,8 @@
 
 #include	"../includes/serial.h"
 #include	"../includes/firmata.h"
+#include 	"../includes/common.h"
+
 
 #include	<string.h>
 #include	<stdlib.h>
@@ -28,7 +30,7 @@ t_firmata	*firmata_new(char *name)
 {
   t_firmata	*res;
 
-  printf("Firmata: Opening device at: %s\n", name);
+  printf(C_TOPIC "Firmata: " C_DEF "Opening device at: %s\n", name);
   res = malloc(sizeof(t_firmata));
   if (!res)
     {
@@ -48,7 +50,7 @@ t_firmata	*firmata_new(char *name)
   firmata_initPins(res);
   serial_setBaud(res->serial, 57600);
   firmata_askFirmware(res);
-  printf("Firmata: Device opened at: %s\n", name);
+  printf(C_TOPIC "Firmata: " C_DEF "Device opened at: %s\n", name);
   return (res);
 }
 

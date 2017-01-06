@@ -1,4 +1,3 @@
-
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,6 +7,7 @@
 #include <time.h>
 #include "includes/firmata.h"
 #include "includes/iniparser.h"
+#include "includes/common.h"
 
 #define FALSE 0
 #define TRUE  1
@@ -20,24 +20,33 @@ void set_relais(int rel, int state);
 void led_blink(void);
 int get_cards(void);
 int get_active (void);
+void write_mpd(void);
+
+void mpd_startup(void);
+
 
 #define PCM_PATH "/proc/asound/pcm"
 #define NUM_REL 16
-#define PORT_BASE 5000
 
 int power_time = 0;
 int amp_time = 0;
 int power_count = 0;
 
-//FILE *shairport[NUM_REL];
-
 struct ini {
 	int relais;
 	int invert;
 	int matrix;
+	int relais_state;
 	char* alsa_dev;
 	char* shair_name;
 	FILE *shairport;
+};
+
+int num_mpd_instances;
+struct mpd {
+	int port;
+	int num_outputs;
+	int outputs[NUM_REL];
 };
 
 struct led_state {
@@ -47,55 +56,57 @@ struct led_state {
 	int state;
 };
 
+
+
 char* serial_port;
 char pbuffer[128];
-int active_cards[NUM_REL];
 
+int active_cards[NUM_REL];
 struct ini confi[NUM_REL];
-int power_relais = 0;
 struct led_state led;
-int port = PORT_BASE;
+struct mpd mpd_conf[NUM_REL];
+
+int power_relais = 0;
+
+int port = 5000;
+int port_incr = 10;
 
 char* arg_ini;
 
-//int ledr, ledb, ledg;
 int num_cards;
 
 t_firmata     *firmata;
 
 void sig_handler(int signo)
 {
-	//int i;
 	if (signo == SIGINT)
     	printf("received SIGINT\n");
-//	for(i=0;i<num_cards;i++){
-//		pclose(confi[i].shairport);
-//	}
 	exit(0);
 }
 
 
 int main(int argc, char *argv[])
 {
+    num_cards = get_cards();
+
     printf("\n");
 
     if (signal(SIGINT, sig_handler) == SIG_ERR) printf("\ncan't catch SIGINT\n");
 
     if (argc < 2){
-        printf("Main: No config specified... use default: /etc/relais.conf\n");
+        printf(C_TOPIC "Main: " C_DEF "No config specified... use default: /etc/relais.conf\n");
         arg_ini = "/etc/relais.conf";
     }else{
     	arg_ini = strdup(argv[1]);
     }
-    printf("Main: Starting Audioserver Control...\n");
+    printf(C_TOPIC "Main: " C_DEF "Starting Audioserver Control...\n");
 
     if(init() == -1){
-        printf("Main: Error... Exit\n\n");
+        printf(C_TOPIC "Main: " C_DEF "Error... Exit\n\n");
         return 0;
     }
-	printf("r: %i", confi[0].matrix);
-    num_cards = get_cards();
 
+    mpd_startup();
 
     int   i = 0;
     char *new_str;
@@ -103,18 +114,15 @@ int main(int argc, char *argv[])
 	for(i=0;i<num_cards;i++){
 		if(confi[i].alsa_dev != NULL && confi[i].shair_name != NULL){
         	ret = asprintf(&new_str,"shairport-sync -p %i -a %s -o alsa -- -d %s",port,confi[i].shair_name,confi[i].alsa_dev);
-			if(ret){}
 			confi[i].shairport = popen(new_str, "r");
-			printf("%s\n",new_str);
+			usleep(100000);
 			free(new_str);
+			port = port + port_incr;
 		}
-	port = port +10;
 	}
 
     for(i=0;i<NUM_REL;i++){
-	active_cards[i] = 0;
-//	printf("relais_port: %i\n",confi[i].relais);
-
+	active_cards[i] = FALSE;
     }
 
     while (1)
@@ -124,14 +132,8 @@ int main(int argc, char *argv[])
 	set_relais(power_relais,pow);
 
         for(i=0; i<num_cards; i++) {
-        	set_relais(confi[i].matrix-1,active_cards[i]);
-			//printf("relais_port: %i\n",confi[confi[i].matrix-1].relais);
-  
-		}
-		//printf("\n");
-		
-
-	
+        	set_relais(confi[i].matrix,active_cards[i]);
+	}
 
         sleep(1);
 	led_blink();
@@ -144,7 +146,9 @@ int parse_ini_file(char * ini_name)
     dictionary  *   ini ;
     const char  *   s;
     int i;
-    printf("Parse: Read configuration: %s\n", ini_name);
+    int w;
+    num_mpd_instances = 0;
+    printf(C_TOPIC "Parse: " C_DEF "Read configuration: %s\n", ini_name);
     ini = iniparser_load(ini_name);
     if (ini==NULL) {
         //fprintf(stderr, "cannot parse file: %s\n", ini_name);
@@ -156,14 +160,15 @@ int parse_ini_file(char * ini_name)
     int ret;
     for(i=0; i<NUM_REL; i++) {
         char *new_str;
+	mpd_conf[i].num_outputs = 0;
 
-        ret = asprintf(&new_str,"%s%d","firmata:rel_port_",i+1);
+        ret = asprintf(&new_str,"%s%d","firmata:rel_port_",i);
         if(ret>0){
 		confi[i].relais = iniparser_getint(ini, new_str, -1);
 		free(new_str);
 	}
 
-	ret = asprintf(&new_str,"%s%d","firmata:rel_inv_",i+1);
+	ret = asprintf(&new_str,"%s%d","firmata:rel_inv_",i);
 	if(ret>0){
         	confi[i].invert = iniparser_getint(ini, new_str, -1);
 		free(new_str);
@@ -174,6 +179,27 @@ int parse_ini_file(char * ini_name)
 		confi[i].matrix = iniparser_getint(ini, new_str, -1);
 		free(new_str);
 	}
+
+        ret = asprintf(&new_str,"mpd:mpd_port%d",i);
+        if(ret>0){
+                mpd_conf[i].port = iniparser_getint(ini, new_str, -1);
+		if(mpd_conf[i].port != -1){
+			num_mpd_instances++;
+		}
+                free(new_str);
+        }
+
+	for(w=0;w < num_cards;w++){
+	        ret = asprintf(&new_str,"mpd:mpd_alsa%d-%d",i,w);
+        	if(ret>0){
+                	mpd_conf[i].outputs[w] = iniparser_getint(ini, new_str, -1);
+			if(mpd_conf[i].outputs[w] != -1){
+				mpd_conf[i].num_outputs++;
+			}
+                	free(new_str);
+        	}
+	}
+
 
 	ret = asprintf(&new_str,"%s%d","alsa:device",i);
 	 if(ret>0){
@@ -193,14 +219,20 @@ int parse_ini_file(char * ini_name)
                 free(new_str);
         }
     }
-    power_time = iniparser_getint(ini, "timing:power_time",0);
-    amp_time = iniparser_getint(ini, "timing:amp_time",0);
-    power_relais = iniparser_getint(ini, "firmata:power_relais",-1)-1;
-    led.green = iniparser_getint(ini, "firmata:ledg", -1);
-    led.blue = iniparser_getint(ini, "firmata:ledb", -1);
-    led.red = iniparser_getint(ini, "firmata:ledr", -1);
-    iniparser_freedict(ini);
-    return 0 ;
+
+    	port = iniparser_getint(ini, "shairport:port_base",5000);
+    	port_incr  = iniparser_getint(ini, "shairport:port_incr",10);
+    	power_time = iniparser_getint(ini, "timing:power_time",0);
+   	amp_time = iniparser_getint(ini, "timing:amp_time",0);
+    	power_relais = iniparser_getint(ini, "firmata:power_relais",-1);
+	led.green = iniparser_getint(ini, "firmata:ledg", -1);
+	led.blue = iniparser_getint(ini, "firmata:ledb", -1);
+    	led.red = iniparser_getint(ini, "firmata:ledr", -1);
+
+
+	printf(C_TOPIC"ALSA: " C_DEF "Cards %i\n", num_cards);
+    	iniparser_freedict(ini);
+    	return 0 ;
 }
 int init(void){
     int i;
@@ -220,29 +252,26 @@ int init(void){
 
     for(i=0; i<NUM_REL; i++) {
         firmata_pinMode(firmata, confi[i].relais, MODE_OUTPUT);
+	confi[i].relais_state = LOW;
         firmata_digitalWrite(firmata, confi[i].relais, confi[i].invert);
     }
     return 0;
 }
 
 void set_relais (int rel, int state){
-	volatile int i = rel;
-	if (state>0){
-		//printf("an: %i   %i\n",confi[rel].relais,state);
-		if (confi[i].invert == 0){
-			firmata_digitalWrite(firmata, confi[i].relais, HIGH);
+	if (state > 0 && confi[rel].relais_state == LOW){
+		confi[rel].relais_state = HIGH;
+		if (confi[rel].invert == FALSE){
+			firmata_digitalWrite(firmata, confi[rel].relais, HIGH);
 		}else{
-			firmata_digitalWrite(firmata, confi[i].relais, LOW);
-			
+			firmata_digitalWrite(firmata, confi[rel].relais, LOW);
 		}
-		
-	}else{
-		//printf("aus: %i   %i\n",confi[rel].relais,state);
-		if (confi[i].invert == 0){
-			firmata_digitalWrite(firmata, confi[i].relais, LOW);
+	}else if(state == 0 && confi[rel].relais_state == HIGH){
+		confi[rel].relais_state = LOW;
+		if (confi[rel].invert == FALSE){
+			firmata_digitalWrite(firmata, confi[rel].relais, LOW);
 		}else{
-			firmata_digitalWrite(firmata, confi[i].relais, HIGH);
-			
+			firmata_digitalWrite(firmata, confi[rel].relais, HIGH);
 		}
 	}
 }
@@ -316,7 +345,6 @@ int get_active(void){
 		free(new_str);
 		}
 	}
-	//printf("power: %i\n",power);
 	if(power){
 		power_count = power_time;
 	}else{
@@ -327,3 +355,31 @@ int get_active(void){
 	return power_count;
 }
 
+void write_mpd(void){
+	#define MPD_TEMP_FIRST "/etc/mpd_first.temp"
+	#define MPD_TEMP_FILE "/etc/mpd_alsa.temp"
+	#define MPD_TEMP_LAST "/etc/mpd_last.temp"
+	#define MPD_CONF "/etc/mpd.conf"
+	FILE *stream;
+	int card;
+	stream = fopen(MPD_TEMP_FILE, "w+");
+	if (stream != NULL){
+		for(card=0;card < num_cards;card++){
+			fprintf(stream, "audio_output {\n\ttype \"alsa\" \n\tname \"%s\" \n\tdevice \"%s\" \n\tmixer_type \"software\"\n}\n\n", confi[card].shair_name, confi[card].alsa_dev);
+		}
+		fclose(stream);
+	}
+	if(system("cat "MPD_TEMP_FIRST" "MPD_TEMP_FILE" "MPD_TEMP_LAST" > "MPD_CONF) != -1){
+        printf(C_TOPIC "MPD: " C_DEF "Configuration for MPD written\n");
+	}
+
+
+}
+
+void mpd_startup(void){
+	printf(C_TOPIC"MPD: "C_DEF"Instances %i\n", num_mpd_instances);
+	write_mpd();
+	if(system("service mpd restart") != -1){
+        	printf(C_TOPIC "MPD: " C_DEF "MPD restarted\n");
+        }
+}
