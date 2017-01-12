@@ -5,12 +5,14 @@
 #include <string.h>
 #include <signal.h>
 #include <time.h>
+#include <alsa/asoundlib.h>
 #include "includes/firmata.h"
 #include "includes/iniparser.h"
 #include "includes/common.h"
 
 #define FALSE 0
 #define TRUE  1
+#define ERROR -1
 
 int parse_ini_file(char * ini_name);
 int init(void);
@@ -21,8 +23,13 @@ void led_blink(void);
 int get_cards(void);
 int get_active (void);
 void write_mpd(void);
+void write_asound(void);
+static void device_list(void);
 
 void mpd_startup(void);
+static snd_pcm_stream_t alsastream = SND_PCM_STREAM_PLAYBACK;
+
+
 
 
 #define PCM_PATH "/proc/asound/pcm"
@@ -87,7 +94,9 @@ void sig_handler(int signo)
 
 int main(int argc, char *argv[])
 {
-    num_cards = get_cards();
+
+
+    device_list();
 
     printf("\n");
 
@@ -110,14 +119,14 @@ int main(int argc, char *argv[])
 
     int   i = 0;
     char *new_str;
-	int ret;
 	for(i=0;i<num_cards;i++){
 		if(confi[i].alsa_dev != NULL && confi[i].shair_name != NULL){
-        	ret = asprintf(&new_str,"shairport-sync -p %i -a %s -o alsa -- -d %s",port,confi[i].shair_name,confi[i].alsa_dev);
-			confi[i].shairport = popen(new_str, "r");
-			usleep(100000);
-			free(new_str);
-			port = port + port_incr;
+        		if(asprintf(&new_str,"shairport-sync -p %i -a %s -o alsa -- -d %s",port,confi[i].shair_name,confi[i].alsa_dev) != ERROR){
+				confi[i].shairport = popen(new_str, "r");
+				usleep(100000);
+				free(new_str);
+				port = port + port_incr;
+			}
 		}
 	}
 
@@ -152,7 +161,7 @@ int parse_ini_file(char * ini_name)
     ini = iniparser_load(ini_name);
     if (ini==NULL) {
         //fprintf(stderr, "cannot parse file: %s\n", ini_name);
-        return -1 ;
+        return ERROR ;
     }
 
     s = iniparser_getstring(ini, "firmata:port", NULL);
@@ -163,25 +172,25 @@ int parse_ini_file(char * ini_name)
 	mpd_conf[i].num_outputs = 0;
 
         ret = asprintf(&new_str,"%s%d","firmata:rel_port_",i);
-        if(ret>0){
+        if(ret != ERROR){
 		confi[i].relais = iniparser_getint(ini, new_str, -1);
 		free(new_str);
 	}
 
 	ret = asprintf(&new_str,"%s%d","firmata:rel_inv_",i);
-	if(ret>0){
+	if(ret != ERROR){
         	confi[i].invert = iniparser_getint(ini, new_str, -1);
 		free(new_str);
 	}
 
 	ret = asprintf(&new_str,"%s%d","matrix:card",i);
-	if(ret>0){
+	if(ret != ERROR){
 		confi[i].matrix = iniparser_getint(ini, new_str, -1);
 		free(new_str);
 	}
 
         ret = asprintf(&new_str,"mpd:mpd_port%d",i);
-        if(ret>0){
+        if(ret != ERROR){
                 mpd_conf[i].port = iniparser_getint(ini, new_str, -1);
 		if(mpd_conf[i].port != -1){
 			num_mpd_instances++;
@@ -191,7 +200,7 @@ int parse_ini_file(char * ini_name)
 
 	for(w=0;w < num_cards;w++){
 	        ret = asprintf(&new_str,"mpd:mpd_alsa%d-%d",i,w);
-        	if(ret>0){
+        	if(ret != ERROR){
                 	mpd_conf[i].outputs[w] = iniparser_getint(ini, new_str, -1);
 			if(mpd_conf[i].outputs[w] != -1){
 				mpd_conf[i].num_outputs++;
@@ -201,17 +210,8 @@ int parse_ini_file(char * ini_name)
 	}
 
 
-	ret = asprintf(&new_str,"%s%d","alsa:device",i);
-	 if(ret>0){
-                s = iniparser_getstring(ini, new_str, NULL);
-		if(s != NULL){
-			confi[i].alsa_dev = strdup(s);
-		}
-                free(new_str);
-        }
-
 	 ret = asprintf(&new_str,"%s%d","shairport:shair",i);
-         if(ret>0){
+         if(ret != ERROR){
                 s = iniparser_getstring(ini, new_str, NULL);
 		if(s != NULL){
 	                confi[i].shair_name = strdup(s);
@@ -236,12 +236,12 @@ int parse_ini_file(char * ini_name)
 }
 int init(void){
     int i;
-    if(parse_ini_file(arg_ini) == -1){
-        return -1;
+    if(parse_ini_file(arg_ini) ==  ERROR){
+        return ERROR;
     }
     firmata = firmata_new(serial_port); //init Firmata
     if (firmata == NULL){
-        return -1;
+        return ERROR;
     }
     while(!firmata->isReady) //Wait until device is up
     firmata_pull(firmata);
@@ -293,24 +293,6 @@ void led_blink(void){
             firmata_digitalWrite(firmata, led.green, LOW);
             firmata_digitalWrite(firmata, led.red, HIGH);
         }
-}
-
-int get_cards(void){
-	int num = 0;
-	FILE *pcm;
-	pcm = fopen(PCM_PATH,"r");
-        if (pcm != NULL ){
-		while(!feof(pcm)){
-  			if(fgetc(pcm) == '\n')
-  			{
-    			num++;
-  			}
-		}
-        	fclose(pcm);
-		return num;
-	}else{
-		return -1;
-	}
 }
 
 int get_active(void){
@@ -379,7 +361,90 @@ void write_mpd(void){
 void mpd_startup(void){
 	printf(C_TOPIC"MPD: "C_DEF"Instances %i\n", num_mpd_instances);
 	write_mpd();
-	if(system("service mpd restart") != -1){
+	if(system("service mpd restart") != ERROR){
         	printf(C_TOPIC "MPD: " C_DEF "MPD restarted\n");
         }
+}
+
+static void device_list(void)
+{
+	snd_ctl_t *handle;
+	int card, err, dev;
+	snd_ctl_card_info_t *info;
+	snd_pcm_info_t *pcminfo;
+	snd_ctl_card_info_alloca(&info);
+	snd_pcm_info_alloca(&pcminfo);
+	card = -1;
+	if (snd_card_next(&card) < 0 || card < 0) {
+		printf("no soundcards found...");
+		return;
+	}
+        snd_pcm_stream_name(alsastream);
+	while (card >= 0) {
+		char name[32];
+		sprintf(name, "hw:%d", card);
+		if ((err = snd_ctl_open(&handle, name, 0)) < 0) {
+			printf("control open (%i): %s", card, snd_strerror(err));
+			goto next_card;
+		}
+		if ((err = snd_ctl_card_info(handle, info)) < 0) {
+			printf("control hardware info (%i): %s", card, snd_strerror(err));
+			snd_ctl_close(handle);
+			goto next_card;
+		}
+		dev = -1;
+		while (1) {
+			if (snd_ctl_pcm_next_device(handle, &dev)<0)
+				printf("snd_ctl_pcm_next_device");
+			if (dev < 0)
+				break;
+			snd_pcm_info_set_device(pcminfo, dev);
+			snd_pcm_info_set_subdevice(pcminfo, 0);
+			snd_pcm_info_set_stream(pcminfo, alsastream);
+			if ((err = snd_ctl_pcm_info(handle, pcminfo)) < 0) {
+				if (err != -ENOENT)
+					printf("control digital audio info (%i): %s", card, snd_strerror(err));
+				continue;
+			}
+			printf(C_TOPIC"ALSA:"C_DEF" card %i: %s [%s], device %i: %s [%s]\n",
+				card, snd_ctl_card_info_get_id(info), snd_ctl_card_info_get_name(info),
+				dev,
+				snd_pcm_info_get_id(pcminfo),
+				snd_pcm_info_get_name(pcminfo));
+			if(asprintf(&confi[card].alsa_dev,"duplex_%i",card) == ERROR){
+				printf("Error allocating memory\n");
+			}
+
+			if (num_cards < card){
+				num_cards = card;
+			}
+		}
+		snd_ctl_close(handle);
+	next_card:
+		if (snd_card_next(&card) < 0) {
+			printf("snd_card_next");
+			break;
+		}
+	}
+	num_cards++;
+	write_asound();
+}
+
+void write_asound(void){
+        #define ASOUND_CONF "/etc/asound.conf"
+        FILE *stream;
+        int card;
+        stream = fopen(ASOUND_CONF, "w+");
+        if (stream != NULL){
+                for(card=0;card < num_cards;card++){
+			fprintf(stream, "#----------------------------------------------------------------------\n");
+                        fprintf(stream, "pcm.room%i {\n\ttype hw\n\tcard %i\n\tdevice 0\n}\n",card , card);
+			fprintf(stream, "ctl.room%i {\n\ttype hw\n\tcard %i\n\tdevice 0\n}\n",card , card);
+			fprintf(stream, "pcm.dmixer_%i {\n\ttype dmix\n\tipc_key 1024\n\tipc_perm 0666\n\tslave.pcm \"room%i\"\n\tslave {\n\t\tperiod_time 0\n\t\tperiod_size 2048\n\t\tbuffer_size 8192\n\t\trate 44100\n\t\tchannels 2\n\t}\n\tbindings {\n\t\t0 0\n\t\t1 1\n\t}\n}\n",card, card);
+			fprintf(stream, "pcm.dsnooper_%i {\n\ttype snoop\n\tipc_key 1024\n\tipc_perm 0666\n\tslave.pcm \"room%i\"\n\tslave {\n\t\tperiod_time 0\n\t\tperiod_size 2048\n\t\tbuffer_size 8192\n\t\trate 44100\n\t\tchannels 2\n\t}\n\tbindings {\n\t\t0 0\n\t\t1 1\n\t}\n}\n",card, card);
+			fprintf(stream, "pcm.duplex_%i {\n\ttype asym\n\tplayback.pcm \"dmixer_%i\"\n\tcapture.pcm \"dsnooper_%i\"\n}\n", card, card, card);
+                }
+                fclose(stream);
+        }
+        printf(C_TOPIC "ALSA: " C_DEF "Configuration for ALSA written\n");
 }
