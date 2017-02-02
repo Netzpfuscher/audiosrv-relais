@@ -45,7 +45,10 @@ void delivered(void *context, MQTTClient_deliveryToken dt);
 int msgarrvd(void *context, char *topicName, int topicLen, MQTTClient_message *message);
 void connlost(void *context, char *cause);
 void mqtt_send(char *message, char *topic);
-
+char* copy_ini_string_i(dictionary * ini, char* ini_topic, int num);
+char* copy_ini_string(dictionary * ini, char* ini_topic);
+int copy_ini_int_i(dictionary * ini, char* ini_topic, int num);
+int search_card(const char* card_name);
 
 void mpd_startup(void);
 static snd_pcm_stream_t alsastream = SND_PCM_STREAM_PLAYBACK;
@@ -63,15 +66,17 @@ struct ini {
 	int matrix;
 	int relais_state;
 	char* alsa_dev;
-	char* shair_name;
+	char* dac_room;
 	FILE *shairport;
+	char* dac_group;
+	char* dac_name;
+	char* dac_short;
+	int alsa_num;
 };
 
 int num_mpd_instances;
 struct mpd {
 	int port;
-	int num_outputs;
-	int outputs[NUM_REL];
 };
 struct led_state {
 	int red;
@@ -124,10 +129,6 @@ int main(int argc, char *argv[])
 {
 
 
-    device_list();
-
-    printf("\n");
-
     if (signal(SIGINT, sig_handler) == SIG_ERR) printf("\ncan't catch SIGINT\n");
 
     if (argc < 2){
@@ -149,15 +150,21 @@ int main(int argc, char *argv[])
         return 0;
     }
 
+    device_list();
+
     mpd_startup();
 
     int   i = 0;
     char *new_str;
 	for(i=0;i<num_cards;i++){
-		if(confi[i].alsa_dev != NULL && confi[i].shair_name != NULL){
-        		if((asprintf(&new_str,"shairport-sync -p %i -a %s -o alsa -- -d %s",port,confi[i].shair_name,confi[i].alsa_dev) != ERROR) && debug == FALSE){
-				confi[i].shairport = popen(new_str, "r");
-				usleep(100000);
+		if(confi[i].alsa_dev != NULL && confi[i].dac_room != NULL){
+        		if(asprintf(&new_str,"shairport-sync -p %i -a %s -o alsa -- -d %s",port,confi[i].dac_room,confi[i].alsa_dev) != ERROR){
+				if(debug == FALSE){
+					confi[i].shairport = popen(new_str, "r");
+					usleep(100000);
+				}else{
+					printf(C_TOPIC "Shairport: " C_DEF "%s\n", new_str);
+				}
 				free(new_str);
 				port = port + port_incr;
 			}
@@ -192,79 +199,30 @@ int main(int argc, char *argv[])
 int parse_ini_file(char * ini_name)
 {
     dictionary  *   ini ;
-    const char  *   s;
     int i;
-    int w;
     num_mpd_instances = 0;
     printf(C_TOPIC "Parse: " C_DEF "Read configuration: %s\n", ini_name);
     ini = iniparser_load(ini_name);
     if (ini==NULL) {
-        //fprintf(stderr, "cannot parse file: %s\n", ini_name);
         return ERROR ;
     }
 
-    s = iniparser_getstring(ini, "firmata:port", NULL);
-    serial_port = strdup(s);
+    serial_port = copy_ini_string(ini, "firmata:port");
+    mqtt_conf.server = copy_ini_string(ini, "mqtt:server");
+    mqtt_conf.topic = copy_ini_string(ini, "mqtt:topic");
 
-    s = iniparser_getstring(ini, "mqtt:server", NULL);
-    mqtt_conf.server = strdup(s);
-
-    s = iniparser_getstring(ini, "mqtt:topic", NULL);
-    mqtt_conf.topic = strdup(s);
-
-
-    int ret;
     for(i=0; i<NUM_REL; i++) {
-        char *new_str;
-	mpd_conf[i].num_outputs = 0;
-
-        ret = asprintf(&new_str,"%s%d","firmata:rel_port_",i);
-        if(ret != ERROR){
-		confi[i].relais = iniparser_getint(ini, new_str, -1);
-		free(new_str);
+	confi[i].relais = copy_ini_int_i(ini, "firmata:rel_port_%d",i);
+	confi[i].invert = copy_ini_int_i(ini, "firmata:rel_inv_%d",i);
+	confi[i].matrix = copy_ini_int_i(ini, "matrix:dac%d_relais",i);
+	mpd_conf[i].port = copy_ini_int_i(ini, "mpd:mpd_port%d",i);
+	if(mpd_conf[i].port != -1){
+		num_mpd_instances++;
 	}
 
-	ret = asprintf(&new_str,"%s%d","firmata:rel_inv_",i);
-	if(ret != ERROR){
-        	confi[i].invert = iniparser_getint(ini, new_str, -1);
-		free(new_str);
-	}
-
-	ret = asprintf(&new_str,"%s%d","matrix:card",i);
-	if(ret != ERROR){
-		confi[i].matrix = iniparser_getint(ini, new_str, -1);
-		free(new_str);
-	}
-
-        ret = asprintf(&new_str,"mpd:mpd_port%d",i);
-        if(ret != ERROR){
-                mpd_conf[i].port = iniparser_getint(ini, new_str, -1);
-		if(mpd_conf[i].port != -1){
-			num_mpd_instances++;
-		}
-                free(new_str);
-        }
-
-	for(w=0;w < num_cards;w++){
-	        ret = asprintf(&new_str,"mpd:mpd_alsa%d-%d",i,w);
-        	if(ret != ERROR){
-                	mpd_conf[i].outputs[w] = iniparser_getint(ini, new_str, -1);
-			if(mpd_conf[i].outputs[w] != -1){
-				mpd_conf[i].num_outputs++;
-			}
-                	free(new_str);
-        	}
-	}
-
-
-	 ret = asprintf(&new_str,"%s%d","shairport:shair",i);
-         if(ret != ERROR){
-                s = iniparser_getstring(ini, new_str, NULL);
-		if(s != NULL){
-	                confi[i].shair_name = strdup(s);
-		}
-                free(new_str);
-        }
+	confi[i].dac_room = copy_ini_string_i(ini,"matrix:dac%d_room",i);
+	confi[i].dac_name = copy_ini_string_i(ini,"matrix:dac%d_name",i);
+	confi[i].dac_group = copy_ini_string_i(ini,"matrix:dac%d_group",i);
     }
 
     	port = iniparser_getint(ini, "shairport:port_base",5000);
@@ -276,10 +234,47 @@ int parse_ini_file(char * ini_name)
 	led.blue = iniparser_getint(ini, "firmata:ledb", -1);
     	led.red = iniparser_getint(ini, "firmata:ledr", -1);
 
-	printf(C_TOPIC"ALSA: " C_DEF "Cards %i\n", num_cards);
     	iniparser_freedict(ini);
     	return 0 ;
 }
+
+char* copy_ini_string_i(dictionary * ini, char* ini_topic, int num){
+	char *new_str;
+	const char  *   s;
+	if(asprintf(&new_str,ini_topic,num) != ERROR){
+                s = iniparser_getstring(ini, new_str, NULL);
+		free(new_str);
+                if (s != NULL){
+                        return strdup(s);
+                }else{
+			return NULL;
+		}
+        }else{
+		return NULL;
+	}
+}
+int copy_ini_int_i(dictionary * ini, char* ini_topic, int num){
+	char *new_str;
+	int temp;
+        if(asprintf(&new_str,ini_topic,num) != ERROR){
+		temp = iniparser_getint(ini, new_str, -1);
+		free(new_str);
+		return temp;
+        }else{
+		return ERROR;
+	}
+}
+char* copy_ini_string(dictionary * ini, char* ini_topic){
+	const char * s;
+    	s = iniparser_getstring(ini, ini_topic, NULL);
+	if(s != NULL){
+    		return strdup(s);
+	}else{
+		return NULL;
+	}
+}
+
+
 int init(void){
     int i;
     if(parse_ini_file(arg_ini) ==  ERROR){
@@ -353,7 +348,7 @@ int get_active(void){
 	int power = 0;
 
 	for (card=0;card < num_cards;card++){
-		if(asprintf(&new_str,"/proc/asound/card%i/stream0",card) != -1){
+		if(asprintf(&new_str,"/proc/asound/%s/stream0",confi[card].dac_short) != -1){
 			stream = fopen(new_str,"r");
 			if (stream != NULL){
 				for (i=0;i<LINE_PLAY;i++){
@@ -393,7 +388,7 @@ void write_mpd(void){
 	stream = fopen(MPD_TEMP_FILE, "w+");
 	if (stream != NULL){
 		for(card=0;card < num_cards;card++){
-			fprintf(stream, "audio_output {\n\ttype \"alsa\" \n\tname \"%s\" \n\tdevice \"%s\" \n\tmixer_type \"software\"\n}\n\n", confi[card].shair_name, confi[card].alsa_dev);
+			fprintf(stream, "audio_output {\n\ttype \"alsa\" \n\tname \"%s\" \n\tdevice \"%s\" \n\tmixer_type \"software\"\n}\n\n", confi[card].dac_room, confi[card].alsa_dev);
 		}
 		fclose(stream);
 	}
@@ -454,13 +449,23 @@ static void device_list(void)
 					printf("control digital audio info (%i): %s", card, snd_strerror(err));
 				continue;
 			}
-			printf(C_TOPIC"ALSA:"C_DEF" card %i: %s [%s], device %i: %s [%s]\n",
-				card, snd_ctl_card_info_get_id(info), snd_ctl_card_info_get_name(info),
-				dev,
-				snd_pcm_info_get_id(pcminfo),
-				snd_pcm_info_get_name(pcminfo));
-			if(asprintf(&confi[card].alsa_dev,"duplex_%i",card) == ERROR){
-				printf("Error allocating memory\n");
+			//printf(C_TOPIC"ALSA:"C_DEF" card %i: %s [%s], device %i: %s [%s]\n",
+			//	card, snd_ctl_card_info_get_id(info), snd_ctl_card_info_get_name(info),
+			//	dev,
+			//	snd_pcm_info_get_id(pcminfo),
+			//	snd_pcm_info_get_name(pcminfo));
+
+			int temp_num = search_card(snd_ctl_card_info_get_name(info));
+			if(temp_num != ERROR){
+				confi[temp_num].alsa_num = card;
+				confi[temp_num].dac_short = strdup(snd_ctl_card_info_get_id(info));
+				if(asprintf(&confi[temp_num].alsa_dev,"duplex_%i",card) == ERROR){
+        	                        printf("Error allocating memory\n");
+	                        }
+				printf(C_TOPIC"ALSA:"C_DEF" dac: %s [%s] found at ALSA dev: %d\n",confi[temp_num].dac_name,confi[temp_num].dac_short,card);
+
+			}else{
+				printf(C_TOPIC"ALSA:"C_DEF" dac: %s not found\n",snd_ctl_card_info_get_name(info));
 			}
 
 			if (num_cards < card){
@@ -475,8 +480,22 @@ static void device_list(void)
 		}
 	}
 	num_cards++;
+	printf(C_TOPIC"ALSA: " C_DEF "Cards %i\n", num_cards);
+
 	write_asound();
 }
+int search_card(const char* card_name){
+	for(int i=0; i<NUM_REL;i++){
+		if(confi[i].dac_name != NULL){
+			if(strcmp(card_name,confi[i].dac_name) == 0){
+			return i;
+			}
+		}
+	}
+	return ERROR;
+}
+
+
 
 void write_asound(void){
         #define ASOUND_CONF "/etc/asound.conf"
@@ -560,8 +579,8 @@ void mqtt_subscribe(struct mqtt* conf){
 		return;
 	}
         for(int i=0;i<num_cards;i++){
-                if(confi[i].alsa_dev != NULL && confi[i].shair_name != NULL){
-			if(asprintf(&new_str, "%s%s",conf->topic, confi[i].shair_name) != ERROR){
+                if(confi[i].alsa_dev != NULL && confi[i].dac_room != NULL){
+			if(asprintf(&new_str, "%s%s",conf->topic, confi[i].dac_room) != ERROR){
 				for(int w = 0; new_str[w]; w++){
  					new_str[w] = tolower(new_str[w]);
 				}
