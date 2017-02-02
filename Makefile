@@ -16,7 +16,7 @@ CFLAGS = -Wall
 RESINC = 
 LIBDIR = 
 LIB = 
-LDFLAGS =-lasound
+LDFLAGS =-lasound -lpaho-mqtt3c
 
 INC_DEBUG = $(INC)
 CFLAGS_DEBUG = $(CFLAGS) -g

@@ -9,10 +9,26 @@
 #include "includes/firmata.h"
 #include "includes/iniparser.h"
 #include "includes/common.h"
+#include "MQTTClient.h"
+#include <ctype.h>
 
 #define FALSE 0
 #define TRUE  1
 #define ERROR -1
+
+#define MQTT_TIMEOUT 10000L
+#define MQTT_QOS 1
+#define MQTT_CLIENTID "Audioserver"
+#define MQTT_SLOTS 16
+
+MQTTClient client;
+MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
+MQTTClient_deliveryToken token;
+volatile MQTTClient_deliveryToken deliveredtoken;
+int flyingtokens[MQTT_SLOTS];
+static char *message_buffer[MQTT_SLOTS];
+static char *topic_buffer[MQTT_SLOTS];
+
 
 int parse_ini_file(char * ini_name);
 int init(void);
@@ -25,12 +41,14 @@ int get_active (void);
 void write_mpd(void);
 void write_asound(void);
 static void device_list(void);
+void delivered(void *context, MQTTClient_deliveryToken dt);
+int msgarrvd(void *context, char *topicName, int topicLen, MQTTClient_message *message);
+void connlost(void *context, char *cause);
+void mqtt_send(char *message, char *topic);
+
 
 void mpd_startup(void);
 static snd_pcm_stream_t alsastream = SND_PCM_STREAM_PLAYBACK;
-
-
-
 
 #define PCM_PATH "/proc/asound/pcm"
 #define NUM_REL 16
@@ -55,7 +73,6 @@ struct mpd {
 	int num_outputs;
 	int outputs[NUM_REL];
 };
-
 struct led_state {
 	int red;
 	int green;
@@ -63,8 +80,16 @@ struct led_state {
 	int state;
 };
 
+struct mqtt {
+	char* server;
+	char* topic;
+	int connected;
+};
 
+int mqtt_init(struct mqtt* conf);
+void mqtt_subscribe(struct mqtt* conf);
 
+int debug = FALSE;
 char* serial_port;
 char pbuffer[128];
 
@@ -72,6 +97,7 @@ int active_cards[NUM_REL];
 struct ini confi[NUM_REL];
 struct led_state led;
 struct mpd mpd_conf[NUM_REL];
+struct mqtt mqtt_conf;
 
 int power_relais = 0;
 
@@ -88,6 +114,8 @@ void sig_handler(int signo)
 {
 	if (signo == SIGINT)
     	printf("received SIGINT\n");
+   	MQTTClient_disconnect(client, 10000);
+    	MQTTClient_destroy(&client);
 	exit(0);
 }
 
@@ -106,7 +134,13 @@ int main(int argc, char *argv[])
         printf(C_TOPIC "Main: " C_DEF "No config specified... use default: /etc/relais.conf\n");
         arg_ini = "/etc/relais.conf";
     }else{
-    	arg_ini = strdup(argv[1]);
+    	if(strcmp(argv[1] ,"-d") == 0){
+		arg_ini =  "/etc/relais.conf";
+		debug = TRUE;
+		printf(C_TOPIC "Main: " C_DEF "Debug mode... use default config: /etc/relais.conf\n");
+	}else{
+	arg_ini = strdup(argv[1]);
+	}
     }
     printf(C_TOPIC "Main: " C_DEF "Starting Audioserver Control...\n");
 
@@ -121,7 +155,7 @@ int main(int argc, char *argv[])
     char *new_str;
 	for(i=0;i<num_cards;i++){
 		if(confi[i].alsa_dev != NULL && confi[i].shair_name != NULL){
-        		if(asprintf(&new_str,"shairport-sync -p %i -a %s -o alsa -- -d %s",port,confi[i].shair_name,confi[i].alsa_dev) != ERROR){
+        		if((asprintf(&new_str,"shairport-sync -p %i -a %s -o alsa -- -d %s",port,confi[i].shair_name,confi[i].alsa_dev) != ERROR) && debug == FALSE){
 				confi[i].shairport = popen(new_str, "r");
 				usleep(100000);
 				free(new_str);
@@ -134,16 +168,21 @@ int main(int argc, char *argv[])
 	active_cards[i] = FALSE;
     }
 
+	if(mqtt_init(&mqtt_conf)){
+		printf(C_TOPIC "MQTT: " C_DEF "Sucessfully connected to server %s\n", mqtt_conf.server);
+	}else{
+		printf(C_TOPIC "MQTT: " C_DEF "Can't connect to server %s\n", mqtt_conf.server);
+	}
+	mqtt_subscribe(&mqtt_conf);
+
     while (1)
     {
-	int pow;
-	pow = get_active();
-	set_relais(power_relais,pow);
+
+	set_relais(power_relais,get_active());
 
         for(i=0; i<num_cards; i++) {
         	set_relais(confi[i].matrix,active_cards[i]);
 	}
-
         sleep(1);
 	led_blink();
     }
@@ -166,6 +205,14 @@ int parse_ini_file(char * ini_name)
 
     s = iniparser_getstring(ini, "firmata:port", NULL);
     serial_port = strdup(s);
+
+    s = iniparser_getstring(ini, "mqtt:server", NULL);
+    mqtt_conf.server = strdup(s);
+
+    s = iniparser_getstring(ini, "mqtt:topic", NULL);
+    mqtt_conf.topic = strdup(s);
+
+
     int ret;
     for(i=0; i<NUM_REL; i++) {
         char *new_str;
@@ -228,7 +275,6 @@ int parse_ini_file(char * ini_name)
 	led.green = iniparser_getint(ini, "firmata:ledg", -1);
 	led.blue = iniparser_getint(ini, "firmata:ledb", -1);
     	led.red = iniparser_getint(ini, "firmata:ledr", -1);
-
 
 	printf(C_TOPIC"ALSA: " C_DEF "Cards %i\n", num_cards);
     	iniparser_freedict(ini);
@@ -361,9 +407,11 @@ void write_mpd(void){
 void mpd_startup(void){
 	printf(C_TOPIC"MPD: "C_DEF"Instances %i\n", num_mpd_instances);
 	write_mpd();
-	if(system("service mpd restart") != ERROR){
-        	printf(C_TOPIC "MPD: " C_DEF "MPD restarted\n");
-        }
+	if(!debug){
+		if(system("service mpd restart") != ERROR){
+        		printf(C_TOPIC "MPD: " C_DEF "MPD restarted\n");
+	        }
+	}
 }
 
 static void device_list(void)
@@ -447,4 +495,101 @@ void write_asound(void){
                 fclose(stream);
         }
         printf(C_TOPIC "ALSA: " C_DEF "Configuration for ALSA written\n");
+}
+
+void delivered(void *context, MQTTClient_deliveryToken dt){
+        for(int i=0;i<MQTT_SLOTS;i++){
+                if(flyingtokens[i] == dt){
+                        free(message_buffer[i]);
+			free(topic_buffer[i]);
+			flyingtokens[i] = -1;
+                        break;
+                }
+        }
+
+
+}
+
+int msgarrvd(void *context, char *topicName, int topicLen, MQTTClient_message *message){
+    int i;
+    char* payloadptr;
+
+
+    printf(C_TOPIC "MQTT: " C_DEF "Message arrived at topic: %s", topicName);
+    printf("   message: ");
+
+    payloadptr = message->payload;
+    for(i=0; i<message->payloadlen; i++)
+    {
+        putchar(*payloadptr++);
+    }
+    putchar('\n');
+    MQTTClient_freeMessage(&message);
+    MQTTClient_free(topicName);
+    return 1;
+}
+
+void connlost(void *context, char *cause){
+    printf("\nConnection lost\n");
+    printf("     cause: %s\n", cause);
+}
+
+int mqtt_init(struct mqtt* conf){
+    int rc;
+    for(int i=0;i<MQTT_SLOTS;i++){
+	flyingtokens[i] = -1;
+    }
+    MQTTClient_create(&client, conf->server, MQTT_CLIENTID, MQTTCLIENT_PERSISTENCE_NONE, NULL);
+    conn_opts.keepAliveInterval = 20;
+    conn_opts.cleansession = 1;
+
+    MQTTClient_setCallbacks(client, NULL, connlost, msgarrvd, delivered);
+
+    if ((rc = MQTTClient_connect(client, &conn_opts)) != MQTTCLIENT_SUCCESS)
+    {
+        return FALSE;
+    }else{
+	conf->connected = TRUE;
+	return TRUE;
+    }
+
+}
+void mqtt_subscribe(struct mqtt* conf){
+	char *new_str;
+	if (!conf->connected){
+		return;
+	}
+        for(int i=0;i<num_cards;i++){
+                if(confi[i].alsa_dev != NULL && confi[i].shair_name != NULL){
+			if(asprintf(&new_str, "%s%s",conf->topic, confi[i].shair_name) != ERROR){
+				for(int w = 0; new_str[w]; w++){
+ 					new_str[w] = tolower(new_str[w]);
+				}
+				MQTTClient_subscribe(client, new_str, MQTT_QOS);
+				printf(C_TOPIC "MQTT: " C_DEF "Subscribe to: %s\n", new_str);
+				free(new_str);
+			}
+                }
+        }
+	return;
+}
+
+void mqtt_send(char *message, char *topic){
+	int token_num=-1;
+	static MQTTClient_message pubmsg = MQTTClient_message_initializer;
+	for(int i=0;i<MQTT_SLOTS;i++){
+		if(flyingtokens[i] == -1){
+			token_num = i;
+			break;
+		}
+	}
+	if(token_num != -1){
+		message_buffer[token_num] = strdup(message);
+		topic_buffer[token_num] = strdup(topic);
+		pubmsg.payload = message_buffer[token_num];
+		pubmsg.payloadlen = strlen(message_buffer[token_num]);
+		pubmsg.qos = MQTT_QOS;
+		pubmsg.retained = 0;
+		MQTTClient_publishMessage(client, topic_buffer[token_num], &pubmsg, &flyingtokens[token_num]);
+	}
 }
