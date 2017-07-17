@@ -38,7 +38,6 @@ void set_relais(int rel, int state);
 void led_blink(void);
 int get_cards(void);
 int get_active (void);
-void write_mpd(void);
 void write_mpd_file(void);
 void write_asound(void);
 static void device_list(void);
@@ -78,13 +77,8 @@ struct ini {
 int num_mpd_instances;
 struct mpd {
 	int port;
-	char* log_file;
 	char* music_dir;
 	char* playlist_dir;
-	char* db_file;
-	char* pid_file;
-	char* state_file;
-	char* sticker_file;
 	FILE *instance;
 };
 struct led_state {
@@ -111,6 +105,7 @@ int active_cards[NUM_REL];
 struct ini confi[NUM_REL];
 struct led_state led;
 struct mpd mpd_conf[NUM_REL];
+char* mpd_data_path;
 struct mqtt mqtt_conf;
 
 int power_relais = 0;
@@ -160,7 +155,7 @@ int main(int argc, char *argv[])
     	}
 
     	device_list();
-	write_mpd_file();
+	mpd_startup();
 
 	int   i = 0;
     	char *new_str;
@@ -232,16 +227,11 @@ int parse_ini_file(char * ini_name)
 	confi[i].dac_room = copy_ini_string_i(ini,"matrix:dac%d_room",i);
 	confi[i].dac_name = copy_ini_string_i(ini,"matrix:dac%d_name",i);
 	confi[i].dac_group = copy_ini_string_i(ini,"matrix:dac%d_group",i);
-	mpd_conf[i].log_file = copy_ini_string_i(ini,"mpd:log_file%d",i);
 	mpd_conf[i].music_dir = copy_ini_string_i(ini,"mpd:music_directory%d",i);
     	mpd_conf[i].playlist_dir = copy_ini_string_i(ini,"mpd:playlist_directory%d",i);
-	mpd_conf[i].db_file = copy_ini_string_i(ini,"mpd:db_file%d",i);
-	mpd_conf[i].pid_file = copy_ini_string_i(ini,"mpd:pid_file%d",i);
-	mpd_conf[i].state_file = copy_ini_string_i(ini,"mpd:state_file%d",i);
-	mpd_conf[i].sticker_file = copy_ini_string_i(ini,"mpd:sticker_file%d",i);
 
 	}
-
+	mpd_data_path = copy_ini_string(ini, "mpd:data_path");
     	port = iniparser_getint(ini, "shairport:port_base",5000);
     	port_incr  = iniparser_getint(ini, "shairport:port_incr",10);
     	power_time = iniparser_getint(ini, "timing:power_time",0);
@@ -395,26 +385,6 @@ int get_active(void){
 	return power_count;
 }
 
-void write_mpd(void){
-	#define MPD_TEMP_FIRST "/etc/mpd_first.temp"
-	#define MPD_TEMP_FILE "/etc/mpd_alsa.temp"
-	#define MPD_TEMP_LAST "/etc/mpd_last.temp"
-	#define MPD_CONF "/etc/mpd.conf"
-	FILE *stream;
-	int card;
-	stream = fopen(MPD_TEMP_FILE, "w+");
-	if (stream != NULL){
-		for(card=0;card < num_cards;card++){
-			fprintf(stream, "audio_output {\n\ttype \"alsa\" \n\tname \"%s\" \n\tdevice \"%s\" \n\tmixer_type \"software\"\n}\n\n", confi[card].dac_room, confi[card].alsa_dev);
-		}
-		fclose(stream);
-	}
-	if(system("cat "MPD_TEMP_FIRST" "MPD_TEMP_FILE" "MPD_TEMP_LAST" > "MPD_CONF) != -1){
-        printf(C_TOPIC "MPD: " C_DEF "Configuration for MPD written\n");
-	}
-
-
-}
 
 void write_mpd_file(void){
         int card;
@@ -423,17 +393,17 @@ void write_mpd_file(void){
 	char *start_str;
         FILE *stream;
 	for(i=0; i<num_mpd_instances; i++) {
-		if(asprintf(&new_str,"test%d.conf",i) != ERROR){
+		if(asprintf(&new_str,"mpd%d.conf",i) != ERROR){
 	        	stream = fopen(new_str, "w+");
 		        if (stream != NULL){
 
         		        fprintf(stream, "music_directory\t\t\"%s\"\n", mpd_conf[i].music_dir);
 	                	fprintf(stream, "playlist_directory\t\t\"%s\"\n", mpd_conf[i].playlist_dir);
-		                fprintf(stream, "db_file\t\t\"%s\"\n", mpd_conf[i].db_file);
-        		        fprintf(stream, "log_file\t\t\"%s\"\n", mpd_conf[i].log_file);
-	               		fprintf(stream, "pid_file\t\t\"%s\"\n", mpd_conf[i].pid_file);
-		                fprintf(stream, "state_file\t\t\"%s\"\n", mpd_conf[i].state_file);
-        		        fprintf(stream, "sticker_file\t\t\"%s\"\n", mpd_conf[i].sticker_file);
+		                fprintf(stream, "db_file\t\t\"%stag_cache%d\"\n", mpd_data_path,i);
+        		        fprintf(stream, "log_file\t\t\"%smpd%d.log\"\n", mpd_data_path,i);
+	               		fprintf(stream, "pid_file\t\t\"%spid%d\"\n", mpd_data_path,i);
+		                fprintf(stream, "state_file\t\t\"%sstate%d\"\n", mpd_data_path,i);
+        		        fprintf(stream, "sticker_file\t\t\"%ssticker%d.sql\"\n", mpd_data_path,i);
 	                	fprintf(stream, "#user\t\t\"mpd\"\n");
 	        	        fprintf(stream, "#group\t\t\"nogroup\"\n");
         	        	fprintf(stream, "bind_to_address\t\t\"any\"\n");
@@ -469,12 +439,7 @@ void write_mpd_file(void){
 
 void mpd_startup(void){
 	printf(C_TOPIC"MPD: "C_DEF"Instances %i\n", num_mpd_instances);
-	write_mpd();
-	if(!debug){
-		if(system("service mpd restart") != ERROR){
-        		printf(C_TOPIC "MPD: " C_DEF "MPD restarted\n");
-	        }
-	}
+	write_mpd_file();
 }
 
 static void device_list(void)
