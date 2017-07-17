@@ -39,6 +39,7 @@ void led_blink(void);
 int get_cards(void);
 int get_active (void);
 void write_mpd(void);
+void write_mpd_file(void);
 void write_asound(void);
 static void device_list(void);
 void delivered(void *context, MQTTClient_deliveryToken dt);
@@ -77,6 +78,14 @@ struct ini {
 int num_mpd_instances;
 struct mpd {
 	int port;
+	char* log_file;
+	char* music_dir;
+	char* playlist_dir;
+	char* db_file;
+	char* pid_file;
+	char* state_file;
+	char* sticker_file;
+	FILE *instance;
 };
 struct led_state {
 	int red;
@@ -129,33 +138,32 @@ int main(int argc, char *argv[])
 {
 
 
-    if (signal(SIGINT, sig_handler) == SIG_ERR) printf("\ncan't catch SIGINT\n");
+	if (signal(SIGINT, sig_handler) == SIG_ERR) printf("\ncan't catch SIGINT\n");
 
-    if (argc < 2){
-        printf(C_TOPIC "Main: " C_DEF "No config specified... use default: /etc/relais.conf\n");
-        arg_ini = "/etc/relais.conf";
-    }else{
-    	if(strcmp(argv[1] ,"-d") == 0){
-		arg_ini =  "/etc/relais.conf";
-		debug = TRUE;
-		printf(C_TOPIC "Main: " C_DEF "Debug mode... use default config: /etc/relais.conf\n");
-	}else{
-	arg_ini = strdup(argv[1]);
-	}
-    }
-    printf(C_TOPIC "Main: " C_DEF "Starting Audioserver Control...\n");
+	if (argc < 2){
+        	printf(C_TOPIC "Main: " C_DEF "No config specified... use default: /etc/relais.conf\n");
+        	arg_ini = "/etc/relais.conf";
+    	}else{
+    		if(strcmp(argv[1] ,"-d") == 0){
+			arg_ini =  "/etc/relais.conf";
+			debug = TRUE;
+			printf(C_TOPIC "Main: " C_DEF "Debug mode... use default config: /etc/relais.conf\n");
+		}else{
+			arg_ini = strdup(argv[1]);
+		}
+    	}
+    	printf(C_TOPIC "Main: " C_DEF "Starting Audioserver Control...\n");
 
-    if(init() == -1){
-        printf(C_TOPIC "Main: " C_DEF "Error... Exit\n\n");
-        return 0;
-    }
+	if(init() == -1){
+        	printf(C_TOPIC "Main: " C_DEF "Error... Exit\n\n");
+        	return 0;
+    	}
 
-    device_list();
+    	device_list();
+	write_mpd_file();
 
-    mpd_startup();
-
-    int   i = 0;
-    char *new_str;
+	int   i = 0;
+    	char *new_str;
 	for(i=0;i<num_cards;i++){
 		if(confi[i].alsa_dev != NULL && confi[i].dac_room != NULL){
         		if(asprintf(&new_str,"shairport-sync -p %i -a %s -o alsa -- -d %s",port,confi[i].dac_room,confi[i].alsa_dev) != ERROR){
@@ -171,9 +179,9 @@ int main(int argc, char *argv[])
 		}
 	}
 
-    for(i=0;i<NUM_REL;i++){
-	active_cards[i] = FALSE;
-    }
+    	for(i=0;i<NUM_REL;i++){
+		active_cards[i] = FALSE;
+    	}
 
 	if(mqtt_init(&mqtt_conf)){
 		printf(C_TOPIC "MQTT: " C_DEF "Sucessfully connected to server %s\n", mqtt_conf.server);
@@ -182,18 +190,18 @@ int main(int argc, char *argv[])
 	}
 	mqtt_subscribe(&mqtt_conf);
 
-    while (1)
-    {
+	while (1)
+    	{
 
-	set_relais(power_relais,get_active());
+		set_relais(power_relais,get_active());
 
-        for(i=0; i<num_cards; i++) {
-        	set_relais(confi[i].matrix,active_cards[i]);
-	}
-        sleep(1);
-	led_blink();
-    }
-    return 0;
+        	for(i=0; i<num_cards; i++) {
+        		set_relais(confi[i].matrix,active_cards[i]);
+		}
+        	sleep(1);
+		led_blink();
+    	}
+    	return 0;
 }
 
 int parse_ini_file(char * ini_name)
@@ -215,15 +223,24 @@ int parse_ini_file(char * ini_name)
 	confi[i].relais = copy_ini_int_i(ini, "firmata:rel_port_%d",i);
 	confi[i].invert = copy_ini_int_i(ini, "firmata:rel_inv_%d",i);
 	confi[i].matrix = copy_ini_int_i(ini, "matrix:dac%d_relais",i);
-	mpd_conf[i].port = copy_ini_int_i(ini, "mpd:mpd_port%d",i);
+	mpd_conf[i].port = copy_ini_int_i(ini, "mpd:port%d",i);
 	if(mpd_conf[i].port != -1){
 		num_mpd_instances++;
 	}
 
+
 	confi[i].dac_room = copy_ini_string_i(ini,"matrix:dac%d_room",i);
 	confi[i].dac_name = copy_ini_string_i(ini,"matrix:dac%d_name",i);
 	confi[i].dac_group = copy_ini_string_i(ini,"matrix:dac%d_group",i);
-    }
+	mpd_conf[i].log_file = copy_ini_string_i(ini,"mpd:log_file%d",i);
+	mpd_conf[i].music_dir = copy_ini_string_i(ini,"mpd:music_directory%d",i);
+    	mpd_conf[i].playlist_dir = copy_ini_string_i(ini,"mpd:playlist_directory%d",i);
+	mpd_conf[i].db_file = copy_ini_string_i(ini,"mpd:db_file%d",i);
+	mpd_conf[i].pid_file = copy_ini_string_i(ini,"mpd:pid_file%d",i);
+	mpd_conf[i].state_file = copy_ini_string_i(ini,"mpd:state_file%d",i);
+	mpd_conf[i].sticker_file = copy_ini_string_i(ini,"mpd:sticker_file%d",i);
+
+	}
 
     	port = iniparser_getint(ini, "shairport:port_base",5000);
     	port_incr  = iniparser_getint(ini, "shairport:port_incr",10);
@@ -398,6 +415,57 @@ void write_mpd(void){
 
 
 }
+
+void write_mpd_file(void){
+        int card;
+	int i;
+	char *new_str;
+	char *start_str;
+        FILE *stream;
+	for(i=0; i<num_mpd_instances; i++) {
+		if(asprintf(&new_str,"test%d.conf",i) != ERROR){
+	        	stream = fopen(new_str, "w+");
+		        if (stream != NULL){
+
+        		        fprintf(stream, "music_directory\t\t\"%s\"\n", mpd_conf[i].music_dir);
+	                	fprintf(stream, "playlist_directory\t\t\"%s\"\n", mpd_conf[i].playlist_dir);
+		                fprintf(stream, "db_file\t\t\"%s\"\n", mpd_conf[i].db_file);
+        		        fprintf(stream, "log_file\t\t\"%s\"\n", mpd_conf[i].log_file);
+	               		fprintf(stream, "pid_file\t\t\"%s\"\n", mpd_conf[i].pid_file);
+		                fprintf(stream, "state_file\t\t\"%s\"\n", mpd_conf[i].state_file);
+        		        fprintf(stream, "sticker_file\t\t\"%s\"\n", mpd_conf[i].sticker_file);
+	                	fprintf(stream, "#user\t\t\"mpd\"\n");
+	        	        fprintf(stream, "#group\t\t\"nogroup\"\n");
+        	        	fprintf(stream, "bind_to_address\t\t\"any\"\n");
+				fprintf(stream, "port\t\t\"%d\"\n",mpd_conf[i].port);
+	        	        fprintf(stream, "input {\n\tplugin \"curl\"\n}\n");
+
+        	        	for(card=0;card < num_cards;card++){
+                	        	fprintf(stream, "audio_output {\n\ttype \"alsa\" \n\tname \"%s\" \n\tdevice \"%s\" \n\tmixer_type \"software\"\n}\n\n", confi[card].dac_room, confi[card].alsa_dev);
+		                }
+
+        		        fprintf(stream, "filesystem_charset\t\t\"UTF-8\"\n");
+                		fprintf(stream, "id3v1_encoding\t\t\"UTF-8\"\n");
+
+	                	fclose(stream);
+				if(asprintf(&start_str,"mpd --no-daemon %s",new_str) != ERROR){
+                                	if(debug == FALSE){
+                                        	mpd_conf[i].instance = popen(start_str, "r");
+                                        	usleep(100000);
+                                	}else{
+                                        	printf(C_TOPIC "MPD: " C_DEF "%s\n", start_str);
+                                	}
+                                	free(start_str);
+				}
+
+	        	}
+			free(new_str);
+		}
+	}
+
+
+}
+
 
 void mpd_startup(void){
 	printf(C_TOPIC"MPD: "C_DEF"Instances %i\n", num_mpd_instances);
